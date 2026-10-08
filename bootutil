@@ -1,0 +1,529 @@
+#!/bin/bash
+
+export POSIXLY_CORRECT=yes
+export LC_ALL=C
+
+
+
+#   Fakulta informačních technologií - VUT v Brně
+#   Description: Program to manipulate with .conf files in system bootloader directory (boot/loader/entries)
+#   Author: Petr Kotek (xkotekp00)
+#   Last-modified: 2025-04-06
+
+DEFAULT_FOLDER="/home/xkotekp00/ios1"
+FOLDER_TO_CHANGE=""
+
+#potom odkomentovat
+# DEFAULT_FOLDER="/boot/loader/entries"
+
+if [ ! "$1" ]; then
+    echo -e "Error: missing a command to execute\n"
+    echo -e "Commands:"
+    echo -e "\t list [ -f -s -k <kernel_regex> -t <title_regex> ]"
+    echo -e "\t remove <title-regex>"
+    echo -e "\t duplicate [<entry_file_path>] [ -k <kernel_path>, -i <initramfs_path>, -t <new_title>, -a <cmdline_args>, -r <cmdline_args>, -d <destination>, --make-default ]"
+    echo -e "\t show-default"
+    echo -e "\t make-default <entry_file_path>"
+    exit 2
+fi
+
+
+
+is_folder(){ #kontroluje v pripade, ze je -b zadano, ze slozka, ktera byla zadana existuje
+    if [ ! -d "$FOLDER_TO_CHANGE" ]; then
+        echo "Folder does not exists"
+        exit 2
+    fi
+}
+is_file(){
+    if [ ! -f "$FILE" ]; then
+        echo "Error: PATH to file does not exists"
+        exit 2
+    fi
+}
+
+CHANGE_DIR="$1"
+shift
+if [ "$CHANGE_DIR" == "-b" ]; then
+    FOLDER_TO_CHANGE=$1
+    is_folder "$FOLDER_TO_CHANGE"
+    # echo "napsal jsi -b <$FOLDER_TO_CHANGE>"
+    DEFAULT_FOLDER="$FOLDER_TO_CHANGE"
+    shift # posunuti na dalsi prikaz
+    COMMAND="$1"
+    shift # posuniti na pozici dalsiho prikazu
+else
+    COMMAND="$CHANGE_DIR"
+fi
+
+
+set_params_list(){
+    title=$(grep -E "^title" "$CONFIG_FILE"  | cut -d' ' -f2-)
+    version=$(grep -E "^version" "$CONFIG_FILE"  | cut -d' ' -f2-)
+    linux=$(grep -E "^linux" "$CONFIG_FILE"  | cut -d' ' -f2-)
+
+    if [ -n "$title" ] && [ -n "$version" ] && [ -n "$linux" ]; then
+         echo "$title ($version, $linux)"
+    fi
+}
+
+list_command() {
+    cd "$DEFAULT_FOLDER" || exit 2
+
+    files=$(find *.conf)
+
+    # -t or -k
+    if [ -n "$TITLE_REGEX" ] || [ -n "$KERNEL_REGEX" ]; then
+        found=0
+        filtered_files=""
+
+        # -t or -k
+        for CONFIG_FILE in $files; do
+            title=$(grep -E "^title" "$CONFIG_FILE" | cut -d' ' -f2-)
+            kernel=$(grep -E "^linux" "$CONFIG_FILE" | awk '{print $2}')
+
+            title_match=true
+            kernel_match=true
+
+            if [ -n "$TITLE_REGEX" ] && [ -n "$title" ]; then
+                if [[ "$title" =~ $TITLE_REGEX ]]; then
+                    title_match=true
+                else
+                    title_match=false
+                fi
+            fi
+
+            if [ -n "$KERNEL_REGEX" ] && [ -n "$kernel" ]; then
+                if [[ "$kernel" =~ $KERNEL_REGEX ]]; then
+                    kernel_match=true
+                else
+                    kernel_match=false
+                fi
+            fi
+
+            if [ "$title_match" == true ] && [ "$kernel_match" == true ]; then
+                filtered_files="$filtered_files$CONFIG_FILE\n"
+                found=1
+            fi
+        done
+
+        if [ "$found" -eq 0 ]; then
+            echo "not found"
+            exit 2
+        fi
+
+        #  -s
+        if [ "$SORT_KEY" = "yes" ]; then
+            WITH_SORTKEY=""
+            WITHOUT_SORTKEY=""
+            for CONFIG_FILE in $(echo -e "$filtered_files"); do
+                sortKey=$(grep "^sort-key" "$CONFIG_FILE" | awk '{print $2}')
+                if [ -n "$sortKey" ]; then
+                    WITH_SORTKEY="$WITH_SORTKEY$sortKey:$CONFIG_FILE\n"
+                else
+                    WITHOUT_SORTKEY="$WITHOUT_SORTKEY$CONFIG_FILE\n"
+                fi
+            done
+            if [ -n "$WITH_SORTKEY" ]; then
+                for CONFIG_FILE in $(echo -e "$WITH_SORTKEY" | sort | cut -d':' -f2); do
+                    set_params_list
+                done
+            fi
+            if [ -n "$WITHOUT_SORTKEY" ]; then
+                for CONFIG_FILE in $(echo -e "$WITHOUT_SORTKEY" | sort); do
+                    set_params_list
+                done
+            fi
+        else
+            # without -s
+            for CONFIG_FILE in $(echo -e "$filtered_files" | sort); do
+                set_params_list
+            done
+        fi
+        exit 0
+    # only -s
+    elif [ "$SORT_KEY" = "yes" ] && [ "$SORT_FILENAME" != "yes" ]; then
+        WITH_SORTKEY=""
+        WITHOUT_SORTKEY=""
+        for CONFIG_FILE in $files; do
+            sortKey=$(grep "^sort-key" "$CONFIG_FILE" | awk '{print $2}')
+            if [ -n "$sortKey" ]; then
+                WITH_SORTKEY="$WITH_SORTKEY$sortKey:$CONFIG_FILE\n"
+            else
+                WITHOUT_SORTKEY="$WITHOUT_SORTKEY$CONFIG_FILE\n"
+            fi
+        done
+        if [ -n "$WITH_SORTKEY" ]; then
+            for CONFIG_FILE in $(echo -e "$WITH_SORTKEY" | sort | cut -d':' -f2); do
+                set_params_list
+            done
+        fi
+        if [ -n "$WITHOUT_SORTKEY" ]; then
+            for CONFIG_FILE in $(echo -e "$WITHOUT_SORTKEY" | sort); do
+                set_params_list
+            done
+        fi
+    # Pokud je zadán -f (řazení podle názvu souboru)
+    elif [ "$SORT_FILENAME" = "yes" ] && [ "$SORT_KEY" != "yes" ]; then
+        for CONFIG_FILE in $(echo "$files" | sort); do
+            set_params_list
+        done
+    # -s i -f 
+    elif [ "$SORT_FILENAME" = "yes" ] && [ "$SORT_KEY" = "yes" ]; then
+        for CONFIG_FILE in $(echo "$files" | sort); do
+            set_params_list
+        done
+    # default
+    else
+        for CONFIG_FILE in $(echo "$files" | sort); do
+            set_params_list
+        done
+    fi
+
+    exit 0
+}
+
+remove_command(){
+    if [ -z "$TITLE_REMOVE" ]; then
+        echo "Error: title not entered"
+        echo "./bootutil remove <title-regex>"
+        exit 2
+    fi
+
+    found=0
+
+    for CONFIG_FILE in *.conf; do
+        title=$(grep -E "^title" "$CONFIG_FILE" | cut -d' ' -f2-)
+        if [ -n "$title" ]; then
+            if [[ "$title" =~ $TITLE_REMOVE ]]; then
+                if [ -f "$CONFIG_FILE" ]; then
+                    rm "$CONFIG_FILE"
+                    found=1
+                else
+                    echo "Error: $CONFIG_FILE is not a valid file or is not readable"
+                fi
+            fi
+        fi
+    done
+    if [ "$found" -eq 0 ]; then
+        echo "Error: File with title '$TITLE_REMOVE' not found"
+        exit 2
+    fi
+}
+
+make_default_other_not(){
+
+    FILE_base=$(basename "$FILE")
+    DIR=$(dirname "$FILE")
+    cd "$DIR" || exit 2
+
+    if grep -q "^vutfit_default" "$FILE_base"; then
+        # Nahradí existující vutfit_default na 'y'
+        sed -i "s/^vutfit_default .*/vutfit_default y/" "$FILE_base"
+    else
+        echo "" >> "$FILE_base"
+        echo "vutfit_default y" >> "$FILE_base"
+    fi
+
+    CONFIG_DIR=$(dirname "$FILE")
+    # echo "$CONFIG_DIR"
+
+    for file in *.conf; do
+        if [ "$file" != "$FILE_base" ]; then
+            if grep -q "^vutfit_default" "$file"; then
+                sed -i "s/^vutfit_default .*/vutfit_default n/" "$file"
+            else
+                echo "" >> "$file"  # new line
+                echo "vutfit_default n" >> "$file"
+            fi
+        fi
+    done
+}
+
+set_params_duplicate()
+{
+    # -k
+    if [ -n "$kernel_path" ]; then
+        escaped_path=$(printf '%q' "$kernel_path")
+        sed -i "s|^linux .*|linux $escaped_path|" "$copiedFile"
+    fi
+    # -i
+    if [ "$initramfs_path" != "" ]; then
+        escaped_path=$(printf '%q' "$initramfs_path")
+        sed -i "s|^initrd .*|initrd $escaped_path|" "$copiedFile"
+    fi
+    # -t
+    if [ "$new_title" != "" ]; then
+        escaped_path=$(printf '%q' "$new_title")
+        sed -i "s|^title .*|title $escaped_path|" "$copiedFile"
+    fi
+
+    for orderArgs in "${orderAR[@]}"; do
+        if [ "$orderArgs" == "a" ]; then
+
+            # -a (arr args)
+
+            if [ -n "$cmdline_args_a" ]; then
+                if grep -q "^options" "$copiedFile"; then
+                    contains=false
+                    argArray=(`grep "^options" "$copiedFile" | xargs | cut -d' ' -f2-` )
+                    # echo "CO BUDU MENIT: ${argArray[*]}"
+                    # echo "CO K TOMU PRIDAM: ${cmdline_args_a[*]}"
+                    
+                    new_args=()
+                    for cmd_arg in "${cmdline_args_a[@]}"; do
+                        duplicate=false
+                        for arg in "${argArray[@]}"; do
+                            if [ "$arg" = "$cmd_arg" ]; then
+                                duplicate=true
+                                break
+                            fi
+                        done
+                        if [ "$duplicate" = false ]; then
+                            new_args+=("$cmd_arg")
+                        fi
+                    done
+
+                    unique_args=($(echo "${new_args[@]}" | tr ' ' '\n' | sort -u | tr '\n' ' '))
+
+                    if [ ${#unique_args[@]} -gt 0 ]; then
+                        argArray+=("${unique_args[@]}")
+                        # echo "CO OPRAVDU PRIDAM: ${argArray[*]}"
+                        sed -i "s/^options .*/options ${argArray[*]}/" "$copiedFile"
+                    fi
+
+                else # when options is not entered in file
+                    echo "" >> "$copiedFile"
+                    echo "options ${cmdline_args_a[*]}" >> "$copiedFile"
+                fi
+            fi
+            # -a (arr args) - END
+        else
+             # - r (remove args)
+            if [ -n "$cmdline_args_b" ]; then
+
+                if grep -q "^options" "$copiedFile"; then
+                    contains=false
+                    argArray=(`grep "^options" "$copiedFile" | xargs | cut -d' ' -f2-` )
+                    # echo "CO BUDU CHTIT MODIFIKOVAT: ${argArray[*]}"
+                    # echo "CO K CHCI SMAZAT: ${cmdline_args_b[*]}"
+
+                    final_args=()
+                    for arg in "${argArray[@]}"; do
+                        keep=true
+                        for remove_arg in "${cmdline_args_b[@]}"; do
+                            if [ "$arg" = "$remove_arg" ] || [[ "$arg" == "$remove_arg"* ]]; then
+                                keep=false
+                                break
+                            fi
+                        done
+                        if [ "$keep" = true ]; then
+                            final_args+=("$arg")
+                        fi
+                    done
+                    argArray=("${final_args[@]}")
+                    # echo "CO OPRAVDU ZŮSTANE: ${argArray[*]}"
+                    if [ ${#argArray[@]} -gt 0 ]; then
+                        sed -i "s/^options .*/options ${argArray[*]}/" "$copiedFile"
+                    fi
+                fi
+            fi
+            # - r (remove args) - END
+        fi
+    done
+}
+
+function_infix(){
+    infix="_1"
+    extension="${FILE_base##*.}"
+    filename="${FILE_base%.*}"
+
+
+    if [ "$destination" != "" ]; then
+        local FILE="$destination"
+        is_file "$FILE"
+        copiedFile="$destination"
+        cp "$FILE_base" "$destination"
+    else
+        copiedFile="${filename}${infix}.${extension}"
+        cp "$FILE_base" "$copiedFile"
+    fi
+}
+
+duplicate_default(){
+
+    found=0
+    for FILE in *.conf; do
+
+        default=$(grep "^vutfit_default" "$FILE" | cut -d' ' -f2)
+
+        if [ -n "$default" ]; then
+            if [ "$default" == "y" ]; then # soubor nalezen
+                found=1 
+                FILE_base=$(basename "$FILE")
+                function_infix
+                
+                set_params_duplicate # nastaveni parametru
+                if [ "$make_default" == false ]; then
+                    make_default_other_not "$FILE"
+                fi
+                exit 0
+            fi
+        fi
+    done
+
+    if [ "$found" -eq 0 ]; then
+        echo "Error: Default file to duplicate not found"
+        exit 2
+    fi
+}
+duplicate_entered_file(){
+    FILE="$file_path"
+    is_file "$FILE"
+
+    DIR=$(dirname "$FILE")
+    FILE_base=$(basename "$FILE")
+    cd "$DIR"
+
+    function_infix
+    
+    set_params_duplicate
+
+    if [ "$make_default" == true ]; then 
+        FILE="$copiedFile"
+        make_default_other_not "$FILE"
+    fi
+    exit 0
+    
+}
+case "$COMMAND" in
+    "list")
+
+        SORT_FILENAME=""
+        SORT_KEY=""
+        KERNEL_REGEX=""
+        TITLE_REGEX=""
+
+        usage() { echo "Usage: $0 [-f] [-s] [-k <linux_regex>] [-t <title_regex>]" 1>&2; exit 1; }
+
+        while getopts "fsk:t:" option; do
+            case $option in
+                f) SORT_FILENAME="yes" ;;
+                s) SORT_KEY="yes" ;;
+                k) KERNEL_REGEX="$OPTARG" ;;
+                t) TITLE_REGEX="$OPTARG" ;;
+                *) usage
+                   exit 2 ;;
+            esac
+        done
+
+        list_command
+        ;;
+    "remove")
+        cd "$DEFAULT_FOLDER" || exit 2
+        TITLE_REMOVE="$1"
+        remove_command # funkce pro odstranění souboru
+
+        ;;
+    "show-default")
+        while getopts "f" option; do
+            case $option in
+                f) ONLY_PATH="yes" ;;
+                *) echo "Command do not exists"
+                    exit 1 ;;
+            esac
+        done
+
+        cd "$DEFAULT_FOLDER" || exit 2
+        found=0
+
+        for CONFIG_FILE in *.conf; do
+           
+            default=$(grep "^vutfit_default" "$CONFIG_FILE" | cut -d' ' -f2)
+
+            if [ -n "$default" ]; then
+                if [ "$default" == "y" ]; then
+                    if [ -n "$ONLY_PATH" ]; then # -f entered, printuju pouze path
+                        readlink -f "$CONFIG_FILE"
+                    else
+                        cat "$CONFIG_FILE" # bez příznaku a printuju celý soubor
+                    fi
+                    found=1
+                fi
+            fi
+        done
+
+        if [ "$found" -eq 0 ]; then
+            echo "Error: Default file not found"
+            exit 2
+        fi
+
+        ;;
+    "make-default")
+
+            FILE="$1"
+            is_file "$FILE"
+            make_default_other_not "$FILE"
+        ;;
+    "duplicate")
+
+        cd "$DEFAULT_FOLDER" || exit 2
+        
+        kernel_path=""
+        initramfs_path=""
+        new_title=""
+        destination=""
+        make_default=false
+        file_path="" #cesta k novemu souboru
+        a_args=0
+        cmdline_args_a=()
+        cmdline_args_b=()
+        is_entryfile_path=false # jestli byl zadán odkaz na soubor, co se bude duplikovat
+
+        orderAR=()
+        
+        TEMP=$(getopt -o k:i:t:a:r:d: --long make-default, \
+              -n 'bootutil' -- "$@")
+
+        if [ $? != 0 ] ; then echo "Arguments error line 404..." >&2 ; exit 1 ; fi
+
+
+        while true; do
+            case "$1" in
+                -k ) kernel_path="$2"; shift 2 ;;
+                -i ) initramfs_path="$2"; shift 2 ;;
+                -t ) new_title="$2"; shift 2 ;;
+                -a ) cmdline_args_a=("${cmdline_args_a[@]}" "$2") ; orderAR=("${orderAR[@]}" "a") ; shift 2 ;;
+                -r ) cmdline_args_b=("${cmdline_args_b[@]}" "$2") ; orderAR=("${orderAR[@]}" "r") ; shift 2 ;;
+                -d ) destination="$2"; shift 2 ;;
+                --make-default ) make_default=true; shift ;;
+                -- ) shift; break ;;
+                * ) break ;;
+            esac
+        done
+
+        # echo ${orderAR[*]}
+        
+        shift $((OPTIND - 1))
+
+        # echo "zbyvajici argumenty: $@"
+        if [ $# -gt 0 ]; then
+            file_path="$1"
+            is_entryfile_path=true
+            shift
+        fi
+        
+        if [ "$is_entryfile_path" == "true" ]; then
+            # echo "I will duplicate entered file $file_path"
+            duplicate_entered_file "$file_path"
+        else
+            # echo "I will duplicate default"
+            duplicate_default
+        fi
+
+        ;;
+    *)
+        echo "Error: Command does not found"
+        exit 1 ;;
+
+esac
